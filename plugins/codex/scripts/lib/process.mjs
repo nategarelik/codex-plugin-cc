@@ -9,7 +9,10 @@ export function runCommand(command, args = [], options = {}) {
     input: options.input,
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
-    shell: options.shell ?? (process.platform === "win32" ? (process.env.SHELL || true) : false),
+    // See app-server.mjs for why this stays off process.env.SHELL: an arbitrary
+    // user-configured shell is not a safe or predictable wrapper for spawning
+    // subprocesses on Windows (#236).
+    shell: options.shell ?? process.platform === "win32",
     windowsHide: true
   });
 

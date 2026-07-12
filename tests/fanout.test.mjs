@@ -220,6 +220,42 @@ test("a cleanup failure annotates the entry with cleanupWarning instead of disca
   assert.match(aggregate.results[0].cleanupWarning, /Permission denied/);
 });
 
+test("a worktree-creation failure becomes a failed entry without discarding the other workers", async () => {
+  const briefs = parseFanoutBriefs(
+    JSON.stringify([
+      { id: "ok", prompt: "Do the good task." },
+      { id: "collision", prompt: "This worker's worktree cannot be created." }
+    ])
+  );
+  const context = makeMockContext({
+    runTurn: async () => ({
+      status: 0,
+      finalMessage: "",
+      envelope: { status: "DONE", summary: "worker succeeded", files_modified: [], concerns: [], blocked_reason: null }
+    })
+  });
+  context.createWorktree = async (repoRoot, worktreeRoot, brief) => {
+    if (brief.id === "collision") {
+      throw new Error("fatal: a branch named 'fanout/collision' already exists");
+    }
+    return { path: `${worktreeRoot}/${brief.id}`, branch: branchNameForBrief(brief) };
+  };
+
+  const aggregate = await runFanout("/repo", "/worktrees", briefs, {
+    createWorktree: context.createWorktree,
+    removeWorktree: context.removeWorktree,
+    runTurn: context.runTurn
+  });
+
+  assert.equal(aggregate.results.length, 1, "the healthy worker's result must survive");
+  assert.equal(aggregate.results[0].id, "ok");
+  assert.equal(aggregate.failed.length, 1);
+  assert.equal(aggregate.failed[0].id, "collision");
+  assert.equal(aggregate.failed[0].workspace, null);
+  assert.equal(aggregate.failed[0].branch, "fanout/collision");
+  assert.match(aggregate.failed[0].error, /already exists/);
+});
+
 test("runFanout rejects an empty brief list", async () => {
   await assert.rejects(runFanout("/repo", "/worktrees", []), /non-empty array of brief specs/);
 });

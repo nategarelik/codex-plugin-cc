@@ -222,7 +222,24 @@ async function computeWorkerOutcome(brief, worktree, context) {
 // only annotates the entry with `cleanupWarning`; the worktree is left in
 // place for manual inspection/removal.
 async function runFanoutWorker(brief, context) {
-  const worktree = await context.createWorktree(context.repoRoot, context.worktreeRoot, brief);
+  let worktree;
+  try {
+    worktree = await context.createWorktree(context.repoRoot, context.worktreeRoot, brief);
+  } catch (error) {
+    // A worktree-setup failure (branch collision, path already exists, a lock
+    // held by a prior run) must become this worker's `failed` entry, never a
+    // rejected lane -- Promise.all over the concurrency lanes would otherwise
+    // discard every other worker's result and the queued briefs behind them.
+    return {
+      bucket: "failed",
+      entry: Object.freeze({
+        id: brief.id,
+        workspace: null,
+        branch: branchNameForBrief(brief),
+        error: error instanceof Error ? error.message : String(error)
+      })
+    };
+  }
   const outcome = await computeWorkerOutcome(brief, worktree, context);
 
   if (!context.cleanup) {

@@ -19,7 +19,7 @@
  *   quotaExhausted: boolean
  * }} CouncilSeatResult
  */
-import { QUOTA_EXHAUSTED_REASON, runTieredAppServerTurn } from "./rig-edition.mjs";
+import { QUOTA_EXHAUSTED_REASON, runTieredTurn } from "./rig-edition.mjs";
 
 export const DEFAULT_COUNCIL_SEATS = 3;
 
@@ -122,11 +122,11 @@ async function runSeatTurn(cwd, seat, prompt, runTurn) {
  * @param {string} cwd
  * @param {string} topic
  * @param {CouncilSeat[]} seatPlan
- * @param {{ runTurn?: typeof runTieredAppServerTurn }} [options]
+ * @param {{ runTurn?: typeof runTieredTurn }} [options]
  * @returns {Promise<Readonly<CouncilSeatResult[]>>}
  */
 export async function runCouncilRound1(cwd, topic, seatPlan, options = {}) {
-  const runTurn = options.runTurn ?? runTieredAppServerTurn;
+  const runTurn = options.runTurn ?? runTieredTurn;
   const nonDeciderSeats = seatPlan.filter((seat) => seat.stance !== "decider");
   const seatResults = await Promise.all(
     nonDeciderSeats.map((seat) => runSeatTurn(cwd, seat, buildSeatPrompt(seat.stance, topic), runTurn))
@@ -140,11 +140,11 @@ export async function runCouncilRound1(cwd, topic, seatPlan, options = {}) {
  * @param {string} topic
  * @param {CouncilSeatResult[]} round1Outputs
  * @param {CouncilSeat} deciderSeat
- * @param {{ runTurn?: typeof runTieredAppServerTurn }} [options]
+ * @param {{ runTurn?: typeof runTieredTurn }} [options]
  * @returns {Promise<Readonly<CouncilSeatResult>>}
  */
 export async function runCouncilRound2(cwd, topic, round1Outputs, deciderSeat, options = {}) {
-  const runTurn = options.runTurn ?? runTieredAppServerTurn;
+  const runTurn = options.runTurn ?? runTieredTurn;
   const prompt = buildDeciderPrompt(topic, round1Outputs);
   return runSeatTurn(cwd, deciderSeat, prompt, runTurn);
 }
@@ -186,7 +186,7 @@ function buildAgreementNotes(round1Outputs) {
  *   effort?: string,
  *   deciderTier?: string,
  *   deciderEffort?: string,
- *   runTurn?: typeof runTieredAppServerTurn
+ *   runTurn?: typeof runTieredTurn
  * }} [options]
  */
 export async function runCouncil(cwd, topic, options = {}) {

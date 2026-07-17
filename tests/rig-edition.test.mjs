@@ -10,9 +10,12 @@ import {
   parseEnvelope,
   PER_VERB_TIER_DEFAULTS,
   resolveTier,
+  runTieredTurn,
   tierDefaultsForVerb,
   withQuotaFailover
 } from "../plugins/codex/scripts/lib/rig-edition.mjs";
+import { buildEnv, installFakeCodexExec, readInvocations } from "./fake-codex-exec-fixture.mjs";
+import { makeTempDir } from "./helpers.mjs";
 
 test("resolveTier resolves a tier alias case-insensitively", () => {
   assert.deepEqual(resolveTier("sol"), { tier: "sol", modelId: "gpt-5.6-sol" });
@@ -309,4 +312,31 @@ test("withQuotaFailover rethrows non-quota errors without retrying", async () =>
 
 test("withQuotaFailover rejects an unresolvable starting tier", async () => {
   await assert.rejects(withQuotaFailover(async () => ({}), { tier: "not-a-tier" }), /Unknown model tier "not-a-tier"/);
+});
+
+test("runTieredTurn reclassifies a real exec 429 so quota failover steps down a tier, then returns QUOTA_EXHAUSTED", async () => {
+  // core-review BLOCKING 2: runExecTurn resolves (never rejects) on a
+  // failed turn, so a real 429 must be reclassified into a thrown error
+  // inside runTieredTurn's withQuotaFailover closure or the step-down never
+  // fires. This drives the real exec transport against a fake codex exec
+  // binary (never a live call) so the fix is exercised end to end, not just
+  // asserted against a mock.
+  const binDir = makeTempDir();
+  installFakeCodexExec(binDir, "rate-limited");
+  const cwd = makeTempDir();
+
+  const result = await runTieredTurn(cwd, {
+    tier: "sol",
+    prompt: "implement the feature",
+    env: buildEnv(binDir),
+    pollIntervalMs: 20,
+    timeoutMs: 5000
+  });
+
+  // withQuotaFailover steps down exactly one tier (sol -> terra) and gives
+  // up there; this fixture rejects every model identically, so both calls
+  // land in the invocation log in that order.
+  assert.deepEqual(readInvocations(binDir), ["gpt-5.6-sol", "gpt-5.6-terra"]);
+  assert.equal(result.status, "BLOCKED");
+  assert.equal(result.blocked_reason, "QUOTA_EXHAUSTED");
 });

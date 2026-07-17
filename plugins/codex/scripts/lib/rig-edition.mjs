@@ -20,6 +20,7 @@
  */
 
 import { runAppServerTurn } from "./codex.mjs";
+import { runExecTurn } from "./exec-transport.mjs";
 
 /** Canonical tier -> full model id, per verified-facts-2026-07-11.md. */
 export const MODEL_ALIASES = Object.freeze({
@@ -323,26 +324,46 @@ export async function withQuotaFailover(fn, options = {}) {
   }
 }
 
+// withQuotaFailover only retries when the wrapped fn REJECTS with a
+// classified quota error. runExecTurn never rejects for a failed turn (by
+// design -- see exec-transport.mjs's "never throw" contract for turn
+// failures, only for preconditions); a real 429 there surfaces as a
+// resolved { status: 1, error, stderr } instead, which withQuotaFailover
+// has nothing to catch and so silently strands the caller at the starting
+// tier (core-review BLOCKING 2). This reclassifies such a result into a
+// thrown, quota-classified error so withQuotaFailover handles it exactly
+// like the app-server path, which already throws for a genuine quota
+// rejection via its own JSON-RPC error propagation -- hence this check is
+// scoped to non-app-server transports only.
+function isQuotaClassifiedExecFailure(result) {
+  if (!result || result.status === 0) {
+    return false;
+  }
+  const combinedMessage = [result.error?.message, result.stderr].filter(Boolean).join("\n");
+  return combinedMessage ? classifyQuotaError({ message: combinedMessage }) : false;
+}
+
 /**
- * Composes runAppServerTurn with tier resolution and quota failover, then
- * attaches a parsed envelope (or null) to the result. Callers pass either
- * a verb (to use PER_VERB_TIER_DEFAULTS) or an explicit tier alias; a verb
- * plus tier/effort overrides both work via tierDefaultsForVerb.
+ * Composes a Codex transport (exec by default, or the app-server) with tier
+ * resolution and quota failover, then attaches a parsed envelope (or null)
+ * to the result. Callers pass either a verb (to use PER_VERB_TIER_DEFAULTS)
+ * or an explicit tier alias; a verb plus tier/effort overrides both work via
+ * tierDefaultsForVerb.
  *
- * This is a new entry point, not a replacement for runAppServerTurn --
- * existing callers of runAppServerTurn are unaffected.
+ * This is a new entry point, not a replacement for runAppServerTurn/
+ * runExecTurn -- existing direct callers of either transport are unaffected.
  * @param {string} cwd
- * @param {Record<string, unknown> & { verb?: string, tier?: string, effort?: string }} [options]
+ * @param {Record<string, unknown> & { verb?: string, tier?: string, effort?: string, transport?: "exec" | "app-server" }} [options]
  */
-export async function runTieredAppServerTurn(cwd, options = {}) {
-  const { verb, tier, effort, ...turnOptions } = options;
+export async function runTieredTurn(cwd, options = {}) {
+  const { verb, tier, effort, transport, ...turnOptions } = options;
 
   const resolvedDefaults = verb
     ? tierDefaultsForVerb(verb, { tier, effort })
     : (() => {
         const resolved = resolveTier(tier);
         if (!resolved) {
-          throw new Error("runTieredAppServerTurn requires either options.verb or a resolvable options.tier.");
+          throw new Error("runTieredTurn requires either options.verb or a resolvable options.tier.");
         }
         if (effort && !isEffortValidForTier(resolved.tier, normalizeKey(effort))) {
           throw new Error(`Unsupported effort "${effort}" for tier "${resolved.tier}".`);
@@ -350,13 +371,24 @@ export async function runTieredAppServerTurn(cwd, options = {}) {
         return { tier: resolved.tier, modelId: resolved.modelId, effort: effort ? normalizeKey(effort) : null };
       })();
 
+  const runTurn = transport === "app-server" ? runAppServerTurn : runExecTurn;
+
   const outcome = await withQuotaFailover(
-    ({ modelId }) =>
-      runAppServerTurn(cwd, {
+    async ({ modelId }) => {
+      const result = await runTurn(cwd, {
         ...turnOptions,
         model: modelId,
         effort: resolvedDefaults.effort
-      }),
+      });
+
+      if (transport !== "app-server" && isQuotaClassifiedExecFailure(result)) {
+        const quotaError = new Error(result.error?.message || result.stderr || "codex exec reported a quota/rate-limit failure.");
+        quotaError.status = 429;
+        throw quotaError;
+      }
+
+      return result;
+    },
     { tier: resolvedDefaults.tier }
   );
 
@@ -366,5 +398,14 @@ export async function runTieredAppServerTurn(cwd, options = {}) {
 
   return { ...outcome, envelope: parseEnvelope(outcome?.finalMessage) };
 }
+
+/**
+ * Back-compat alias for callers written against the pre-exec-transport API.
+ * Always routes to the app-server transport regardless of the caller's
+ * environment default.
+ * @param {string} cwd
+ * @param {Record<string, unknown> & { verb?: string, tier?: string, effort?: string }} [options]
+ */
+export const runTieredAppServerTurn = (cwd, options = {}) => runTieredTurn(cwd, { ...options, transport: "app-server" });
 
 export { QUOTA_EXHAUSTED_REASON };

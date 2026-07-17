@@ -22,7 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { QUOTA_EXHAUSTED_REASON, runTieredAppServerTurn } from "./rig-edition.mjs";
+import { QUOTA_EXHAUSTED_REASON, runTieredTurn } from "./rig-edition.mjs";
 import { runCommandChecked } from "./process.mjs";
 
 export const FANOUT_MAX_CONCURRENCY = 5;
@@ -272,7 +272,7 @@ async function runFanoutWorker(brief, context) {
  *   cleanup?: boolean,
  *   createWorktree?: typeof createWorktree,
  *   removeWorktree?: typeof removeWorktree,
- *   runTurn?: typeof runTieredAppServerTurn
+ *   runTurn?: typeof runTieredTurn
  * }} [options]
  */
 export async function runFanout(repoRoot, worktreeRoot, briefs, options = {}) {
@@ -286,7 +286,10 @@ export async function runFanout(repoRoot, worktreeRoot, briefs, options = {}) {
     cleanup: Boolean(options.cleanup),
     createWorktree: options.createWorktree ?? createWorktree,
     removeWorktree: options.removeWorktree ?? removeWorktree,
-    runTurn: options.runTurn ?? runTieredAppServerTurn
+    // runTieredTurn defaults to the exec transport (transport: undefined !==
+    // "app-server"); fanout workers run headless, so exec is the right
+    // default here.
+    runTurn: options.runTurn ?? runTieredTurn
   };
 
   const concurrency = resolveConcurrency(options.concurrency);
